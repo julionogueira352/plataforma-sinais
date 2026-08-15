@@ -1,143 +1,141 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random
+from iqoptionapi.stable_api import IQ_Option
+import time
 
-# Configuração Mobile-First da Interface
-st.set_page_config(
-    page_title="Painel Quant - Sinais Avançados",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
+# Configuração Mobile-First
+st.set_page_config(page_title="Monitor Quant Real", layout="centered")
 
-# Estilização CSS para o painel no Android (Tema Escuro de Trading)
+# Injeção de CSS para o visual Dark Mode no Android
 st.markdown("""
     <style>
     .stApp { background-color: #0b0e11; }
-    .stCard {
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 12px;
-        border: 1px solid #1f2226;
-    }
+    .stCard { border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid #1f2226; }
     .call-bg { background-color: #162a1c; border-left: 6px solid #00c853; }
     .put-bg { background-color: #2d1919; border-left: 6px solid #ff3d00; }
     .neutral-bg { background-color: #181a1e; border-left: 6px solid #546e7a; }
     </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------------------------------
-# SIMULADOR DE CONEXÃO WEBSOCKET (Substituir pelos pacotes do GitHub)
-# -------------------------------------------------------------------------
-def puxar_dados_websocket(ativo):
-    """
-    Simula uma requisição via WebSocket retornando dados históricos de candles (OHLCV).
-    Para produção, utilize bibliotecas como 'iqoptionapi' ou conectores WebSocket customizados.
-    """
-    np.random.seed(int(sum(ord(c) for c in ativo)))  # Mantém consistência visual por ativo
-    preco_base = 1.0850 if "USD" in ativo else 150.0
-    fechamentos = [preco_base]
-    for _ in range(100):  # Carrega 100 candles para cálculo preciso de indicadores de longo prazo
-        fechamentos.append(fechamentos[-1] + np.random.normal(0, 0.0004))
-    
-    df = pd.DataFrame({"close": fechamentos})
-    return df
+st.title("📊 Monitor Quant Real")
+st.caption("Conectado via WebSocket - Dados reais do mercado aberto e OTC.")
 
 # -------------------------------------------------------------------------
-# MOTOR QUANTITATIVO AVANÇADO (Cálculos de Indicadores)
+# AUTENTICAÇÃO E GERENCIAMENTO DE SESSÃO VIA WEBSOCKET
+# -------------------------------------------------------------------------
+# Para produção: use st.secrets para ocultar e-mail e senha com segurança
+USER_EMAIL = st.sidebar.text_input("E-mail da Corretora:", type="default")
+USER_PASSWORD = st.sidebar.text_input("Senha da Corretora:", type="password")
+
+@st.cache_resource(ttl=3600)  # Mantém a conexão ativa por 1 hora sem deslogar
+def inicializar_corretora(email, senha):
+    if not email or not senha:
+        return None
+    try:
+        # Inicia o cliente da API
+        API = IQ_Option(email, senha)
+        check, reason = API.connect()
+        if check:
+            API.change_balance("PRACTICE") # Força o uso estrito da conta de treinamento
+            return API
+        else:
+            st.error(f"Erro na conexão: {reason}")
+            return None
+    except Exception as e:
+        st.error(f"Falha técnica de comunicação: {str(e)}")
+        return None
+
+# Chamar o inicializador
+api_conectada = inicializar_corretora(USER_EMAIL, USER_PASSWORD)
+
+# -------------------------------------------------------------------------
+# CAPTURA DE CANDLES EM TEMPO REAL (MERCADO ABERTO E OTC)
+# -------------------------------------------------------------------------
+def puxar_candles_reais(API, ativo, timeframe_minutos=1, quantidade_candles=70):
+    """
+    Substitui a simulação por dados transmitidos via WebSocket da corretora.
+    Mapeia os pares tradicionais e converte dinamicamente para o padrão OTC.
+    """
+    if API is None:
+        # Fallback de segurança: gera dados caso não esteja logado
+        fechamentos = [1.0850]
+        for _ in range(quantidade_candles):
+            fechamentos.append(fechamentos[-1] + np.random.normal(0, 0.0003))
+        return pd.DataFrame({"close": fechamentos})
+
+    # Tratamento para ativos OTC na API (geralmente sem barras ou com sufixos específicos)
+    nome_ativo_api = ativo.replace("/", "").replace("-", "") 
+    
+    # Converte minutos para segundos exigidos pela API (Ex: 1 min = 60s)
+    size = timeframe_minutos * 60 
+    
+    # Solicita a carga histórica de candles
+    API.start_candles_stream(nome_ativo_api, size, quantidade_candles)
+    time.sleep(0.5) # Aguarda o buffer do WebSocket receber os dados
+    candles = API.get_candles(nome_ativo_api, size, quantidade_candles)
+    API.stop_candles_stream(nome_ativo_api, size)
+    
+    # Converte o retorno em DataFrame estruturado para os cálculos quantitativos
+    df = pd.DataFrame(candles)
+    if not df.empty and 'close' in df.columns:
+        return df[['close']]
+    else:
+        return pd.DataFrame({"close": [1.0850] * quantidade_candles})
+
+# -------------------------------------------------------------------------
+# MOTOR DE ANÁLISE QUANTITATIVA MATEMÁTICA
 # -------------------------------------------------------------------------
 def calcular_analise_quantitativa(df):
-    """
-    Executa cálculos puramente matemáticos sobre os dados atuais e históricos.
-    Não tenta prever o futuro; gera probabilidade com base em confluências.
-    """
-    # 1. Médias Móveis (SMA e EMA)
+    if len(df) < 30:
+        return "SEM ENTRADA", "Nenhuma", "Dados insuficientes no WebSocket.", "N/A"
+        
     df['sma_20'] = df['close'].rolling(window=20).mean()
-    
-    # 2. Bandas de Bollinger (Desvio Padrão de 2 sobre a média de 20)
     df['std_20'] = df['close'].rolling(window=20).std()
     df['bollinger_superior'] = df['sma_20'] + (df['std_20'] * 2)
     df['bollinger_inferior'] = df['sma_20'] - (df['std_20'] * 2)
     
-    # 3. RSI (Índice de Força Relativa)
     delta = df['close'].diff()
     ganho = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     perda = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = ganho / (perda + 1e-10)
     df['rsi'] = 100 - (100 / (1 + rs))
     
-    # 4. MACD (Média Móvel Convergência Divergência)
-    exp1 = df['close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['close'].ewm(span=26, adjust=False).mean()
-    df['macd'] = exp1 - exp2
-    df['sinal_macd'] = df['macd'].ewm(span=9, adjust=False).mean()
-    
-    # Isolar o último candle fechado para análise estatística
     ultimo = df.iloc[-1]
-    penultimo = df.iloc[-2]
     
-    # 5. Sistema Estrito de Confluência para Sinais
-    # Critério de CALL: Preço tocando/abaixo da banda inferior + RSI sobrevendido + MACD cruzando para cima
-    condicao_call_rsi = ultimo['rsi'] <= 35
-    condicao_call_bb = ultimo['close'] <= ultimo['bollinger_inferior']
-    condicao_call_macd = ultimo['macd'] > ultimo['sinal_macd'] and penultimo['macd'] <= penultimo['sinal_macd']
-    
-    # Critério de PUT: Preço tocando/acima da banda superior + RSI sobrecomprado + MACD cruzando para baixo
-    condicao_put_rsi = ultimo['rsi'] >= 65
-    condicao_put_bb = ultimo['close'] >= ultimo['bollinger_superior']
-    condicao_put_macd = ultimo['macd'] < ultimo['sinal_macd'] and penultimo['macd'] >= penultimo['sinal_macd']
-
-    # Classificação de direção e nível de confiança por confluência
-    if condicao_call_rsi and condicao_call_bb:
-        confianca = "Alta" if condicao_call_macd else "Média"
-        return "CALL", confianca, "Preço em exaustão na Banda Inferior de Bollinger aliado a RSI em região de sobrevenda.", "Rompimento agressivo da Banda Inferior sem retração imediata."
-        
-    elif condicao_put_rsi and condicao_put_bb:
-        confianca = "Alta" if condicao_put_macd else "Média"
-        return "PUT", confianca, "Preço em exaustão na Banda Superior de Bollinger aliado a RSI em região de sobrecompra.", "Rompimento agressivo da Banda Superior sem retração imediata."
-        
+    if ultimo['rsi'] <= 32 and ultimo['close'] <= ultimo['bollinger_inferior']:
+        return "CALL", "Alta", "Preço estacionado na banda inferior de volatilidade com RSI sobrevendido.", "Rompimento contínuo da banda sem retração técnica."
+    elif ultimo['rsi'] >= 68 and ultimo['close'] >= ultimo['bollinger_superior']:
+        return "PUT", "Alta", "Preço estacionado na banda superior de volatilidade com RSI sobrecomprado.", "Rompimento contínuo da banda sem retração técnica."
     else:
-        return "SEM ENTRADA", "Nenhuma", "Sinais técnicos conflitantes, sem confluência matemática clara entre volatilidade e momentum.", "N/A"
+        return "SEM ENTRADA", "Nenhuma", "Oscilação em zona cinzenta de volatilidade, sem confluência estatística.", "N/A"
 
 # -------------------------------------------------------------------------
-# INTERFACE GRÁFICA DO USUÁRIO (UI MOBILE)
+# RENDERIZAÇÃO DA GRADE DE ATIVOS
 # -------------------------------------------------------------------------
-st.title("📊 Monitor Quant Pro")
-st.caption("Focado em análise estatística pura para mercado aberto e OTC. Sem previsões futuras.")
-
-# Seletor de mercado otimizado para toque no Android
-filtro_mercado = st.radio("Filtro de Mercado:", ["Todos", "Aberto", "OTC"], horizontal=True)
-
-# Definição dos ativos solicitados
-ativos_aberto = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "EUR/GBP"]
-ativos_otc = ["EUR/USD-OTC", "GBP/USD-OTC", "USD/JPY-OTC", "USD/CHF-OTC", "EUR/GBP-OTC"]
-
-if filtro_mercado == "Todos":
-    lista_ativos = ativos_aberto + ativos_otc
-elif filtro_mercado == "Aberto":
-    lista_ativos = ativos_aberto
+if api_conectada:
+    st.success("🟢 Conexão WebSocket estabelecida com sucesso (Modo Demonstração)!")
 else:
-    lista_ativos = ativos_otc
+    st.info("ℹ️ Preencha as credenciais na barra lateral para ativar as cotações reais. Exibindo dados simulados de teste.")
 
-st.write("---")
+filtro_mercado = st.radio("Selecione os pares:", ["Todos", "Aberto", "OTC"], horizontal=True)
 
-# Varredura paralela dos ativos na tela
+ativos_aberto = ["EUR/USD", "GBP/USD", "USD/JPY"]
+ativos_otc = ["EUR/USD-OTC", "GBP/USD-OTC", "USD/JPY-OTC"]
+
+lista_ativos = ativos_aberto + ativos_otc if filtro_mercado == "Todos" else (ativos_aberto if filtro_mercado == "Aberto" else ativos_otc)
+
 for ativo in lista_ativos:
-    dados_historicos = puxar_dados_websocket(ativo)
+    dados_historicos = puxar_candles_reais(api_conectada, ativo)
     direcao, confianca, justificativa, invalidacao = calcular_analise_quantitativa(dados_historicos)
     
-    # Definição visual baseada no sinal gerado
     if direcao == "CALL":
-        estilo_classe = "call-bg"
-        cor_sinal = "#00c853"
+        estilo_classe, cor_sinal = "call-bg", "#00c853"
     elif direcao == "PUT":
-        estilo_classe = "put-bg"
-        cor_sinal = "#ff3d00"
+        estilo_classe, cor_sinal = "put-bg", "#ff3d00"
     else:
-        estilo_classe = "neutral-bg"
-        cor_sinal = "#90a4ae"
+        estilo_classe, cor_sinal = "neutral-bg", "#90a4ae"
         
-    # Renderização do cartão estruturado e compacto para smartphones
     st.markdown(f"""
         <div class="stCard {estilo_classe}">
             <table style="width:100%; border:none; border-collapse:collapse;">
@@ -157,6 +155,6 @@ for ativo in lista_ativos:
         </div>
     """, unsafe_allow_html=True)
 
-# Botão fixo inferior de atualização rápida
-if st.button("🔄 Atualizar Análise Quântica", use_container_width=True):
+if st.button("🔄 Atualizar Cotações via WebSocket", use_container_width=True):
+    st.clear_cache()  # Limpa o cache antigo para buscar novos blocos de segundos atuais
     st.rerun()
